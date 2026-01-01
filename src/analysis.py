@@ -711,3 +711,595 @@ class PDFReportGenerator:
         """ダウンロードリンクを生成"""
         b64 = base64.b64encode(pdf_bytes).decode()
         return f'<a href="data:application/pdf;base64,{b64}" download="{filename}">📥 PDFレポートをダウンロード</a>'
+
+
+class SimilarPropertyFinder:
+    """類似物件検索クラス"""
+    
+    def __init__(self, df: pd.DataFrame, feature_columns: list, target_column: str):
+        self.df = df.copy()
+        self.feature_columns = feature_columns
+        self.target_column = target_column
+        self.scaler = None
+        self.scaled_features = None
+        
+    def fit(self):
+        """特徴量をスケーリング"""
+        from sklearn.preprocessing import StandardScaler
+        
+        # 数値列のみ抽出
+        numeric_cols = [col for col in self.feature_columns 
+                       if col in self.df.columns and self.df[col].dtype in ['int64', 'float64', 'int32', 'float32']]
+        
+        self.numeric_cols = numeric_cols
+        self.scaler = StandardScaler()
+        self.scaled_features = self.scaler.fit_transform(self.df[numeric_cols].fillna(0))
+        
+        return self
+    
+    def find_similar(self, X_query: pd.DataFrame, n_neighbors: int = 5, 
+                    method: str = 'euclidean') -> pd.DataFrame:
+        """類似物件を検索"""
+        if self.scaler is None:
+            self.fit()
+        
+        from sklearn.metrics.pairwise import cosine_similarity, euclidean_distances
+        
+        # クエリをスケーリング
+        query_numeric = X_query[self.numeric_cols].fillna(0).values
+        query_scaled = self.scaler.transform(query_numeric)
+        
+        # 距離/類似度を計算
+        if method == 'cosine':
+            similarities = cosine_similarity(query_scaled, self.scaled_features)[0]
+            indices = np.argsort(similarities)[::-1][:n_neighbors]
+            scores = similarities[indices]
+        else:  # euclidean
+            distances = euclidean_distances(query_scaled, self.scaled_features)[0]
+            indices = np.argsort(distances)[:n_neighbors]
+            scores = 1 / (1 + distances[indices])  # 類似度に変換
+        
+        # 結果を作成
+        similar_df = self.df.iloc[indices].copy()
+        similar_df['類似度スコア'] = scores
+        similar_df['順位'] = range(1, len(similar_df) + 1)
+        
+        # 列の順序を調整
+        cols = ['順位', '類似度スコア'] + [self.target_column] + \
+               [c for c in similar_df.columns if c not in ['順位', '類似度スコア', self.target_column]]
+        
+        return similar_df[cols]
+    
+    def plot_similar_properties(self, query_prediction: float, similar_df: pd.DataFrame) -> go.Figure:
+        """類似物件の比較プロット"""
+        fig = go.Figure()
+        
+        # 類似物件の実績価格
+        fig.add_trace(go.Bar(
+            x=[f"類似物件{i+1}" for i in range(len(similar_df))],
+            y=similar_df[self.target_column].values,
+            name='実績価格',
+            marker_color='#1f77b4',
+            text=[f"{v:,.0f}<br>(類似度:{s:.2f})" 
+                  for v, s in zip(similar_df[self.target_column].values, similar_df['類似度スコア'].values)],
+            textposition='outside'
+        ))
+        
+        # 予測価格のライン
+        fig.add_hline(y=query_prediction, line_dash="dash", line_color="red",
+                     annotation_text=f"予測価格: {query_prediction:,.0f}")
+        
+        # 平均価格のライン
+        avg_price = similar_df[self.target_column].mean()
+        fig.add_hline(y=avg_price, line_dash="dot", line_color="green",
+                     annotation_text=f"類似物件平均: {avg_price:,.0f}")
+        
+        fig.update_layout(
+            title=dict(text="<b>類似物件との価格比較</b>", font=dict(size=18)),
+            xaxis_title="物件",
+            yaxis_title=self.target_column,
+            template='plotly_white',
+            height=450
+        )
+        
+        return fig
+
+
+class DataQualityChecker:
+    """データ品質チェッククラス"""
+    
+    def __init__(self, df: pd.DataFrame):
+        self.df = df.copy()
+        self.report = {}
+        
+    def check_all(self) -> dict:
+        """全てのチェックを実行"""
+        self.report = {
+            'duplicates': self._check_duplicates(),
+            'missing': self._check_missing(),
+            'outliers': self._check_outliers(),
+            'type_issues': self._check_type_issues(),
+            'value_ranges': self._check_value_ranges(),
+            'correlations': self._check_high_correlations(),
+            'summary': {}
+        }
+        
+        # サマリーを作成
+        total_issues = (
+            self.report['duplicates']['count'] +
+            len(self.report['missing']['columns_with_missing']) +
+            sum(len(v) for v in self.report['outliers'].values()) +
+            len(self.report['type_issues'])
+        )
+        
+        self.report['summary'] = {
+            'total_rows': len(self.df),
+            'total_columns': len(self.df.columns),
+            'total_issues': total_issues,
+            'quality_score': max(0, 100 - total_issues * 2)  # 簡易スコア
+        }
+        
+        return self.report
+    
+    def _check_duplicates(self) -> dict:
+        """重複行チェック"""
+        duplicates = self.df.duplicated()
+        duplicate_rows = self.df[duplicates]
+        
+        return {
+            'count': duplicates.sum(),
+            'percentage': (duplicates.sum() / len(self.df) * 100),
+            'indices': duplicate_rows.index.tolist()[:10]  # 最初の10件
+        }
+    
+    def _check_missing(self) -> dict:
+        """欠損値チェック"""
+        missing = self.df.isnull().sum()
+        missing_pct = (missing / len(self.df) * 100).round(2)
+        
+        columns_with_missing = missing[missing > 0].to_dict()
+        
+        return {
+            'total_missing_cells': self.df.isnull().sum().sum(),
+            'columns_with_missing': columns_with_missing,
+            'missing_percentage': missing_pct[missing_pct > 0].to_dict()
+        }
+    
+    def _check_outliers(self) -> dict:
+        """異常値チェック（IQR法）"""
+        outliers = {}
+        
+        numeric_cols = self.df.select_dtypes(include=[np.number]).columns
+        
+        for col in numeric_cols:
+            Q1 = self.df[col].quantile(0.25)
+            Q3 = self.df[col].quantile(0.75)
+            IQR = Q3 - Q1
+            
+            lower_bound = Q1 - 1.5 * IQR
+            upper_bound = Q3 + 1.5 * IQR
+            
+            outlier_mask = (self.df[col] < lower_bound) | (self.df[col] > upper_bound)
+            outlier_count = outlier_mask.sum()
+            
+            if outlier_count > 0:
+                outlier_values = self.df.loc[outlier_mask, col].head(5).tolist()
+                outliers[col] = {
+                    'count': int(outlier_count),
+                    'percentage': round(outlier_count / len(self.df) * 100, 2),
+                    'lower_bound': round(lower_bound, 2),
+                    'upper_bound': round(upper_bound, 2),
+                    'sample_values': outlier_values
+                }
+        
+        return outliers
+    
+    def _check_type_issues(self) -> list:
+        """データ型の問題をチェック"""
+        issues = []
+        
+        for col in self.df.columns:
+            # 数値列に文字列が混入していないかチェック
+            if self.df[col].dtype == 'object':
+                # 数値に変換可能かチェック
+                numeric_convertible = pd.to_numeric(self.df[col], errors='coerce')
+                non_numeric_count = numeric_convertible.isna().sum() - self.df[col].isna().sum()
+                
+                if non_numeric_count > 0 and non_numeric_count < len(self.df) * 0.5:
+                    issues.append({
+                        'column': col,
+                        'issue': '数値と文字列が混在',
+                        'non_numeric_count': int(non_numeric_count)
+                    })
+        
+        return issues
+    
+    def _check_value_ranges(self) -> dict:
+        """値の範囲チェック（負の値など）"""
+        issues = {}
+        
+        numeric_cols = self.df.select_dtypes(include=[np.number]).columns
+        
+        for col in numeric_cols:
+            col_issues = []
+            
+            # 負の値チェック
+            negative_count = (self.df[col] < 0).sum()
+            if negative_count > 0:
+                col_issues.append(f"負の値: {negative_count}件")
+            
+            # ゼロ値チェック
+            zero_count = (self.df[col] == 0).sum()
+            if zero_count > len(self.df) * 0.5:  # 50%以上がゼロ
+                col_issues.append(f"ゼロ値が多い: {zero_count}件 ({zero_count/len(self.df)*100:.1f}%)")
+            
+            if col_issues:
+                issues[col] = col_issues
+        
+        return issues
+    
+    def _check_high_correlations(self, threshold: float = 0.95) -> list:
+        """高い相関をチェック（多重共線性）"""
+        numeric_df = self.df.select_dtypes(include=[np.number])
+        
+        if len(numeric_df.columns) < 2:
+            return []
+        
+        corr_matrix = numeric_df.corr().abs()
+        
+        # 上三角行列から高い相関を抽出
+        high_corr = []
+        for i in range(len(corr_matrix.columns)):
+            for j in range(i + 1, len(corr_matrix.columns)):
+                if corr_matrix.iloc[i, j] >= threshold:
+                    high_corr.append({
+                        'feature1': corr_matrix.columns[i],
+                        'feature2': corr_matrix.columns[j],
+                        'correlation': round(corr_matrix.iloc[i, j], 4)
+                    })
+        
+        return high_corr
+    
+    def get_summary_dataframe(self) -> pd.DataFrame:
+        """サマリーをDataFrameで取得"""
+        if not self.report:
+            self.check_all()
+        
+        data = [
+            {'チェック項目': '総行数', '結果': self.report['summary']['total_rows'], '状態': '✅'},
+            {'チェック項目': '総列数', '結果': self.report['summary']['total_columns'], '状態': '✅'},
+            {'チェック項目': '重複行', '結果': self.report['duplicates']['count'], 
+             '状態': '✅' if self.report['duplicates']['count'] == 0 else '⚠️'},
+            {'チェック項目': '欠損値のある列', '結果': len(self.report['missing']['columns_with_missing']),
+             '状態': '✅' if len(self.report['missing']['columns_with_missing']) == 0 else '⚠️'},
+            {'チェック項目': '異常値のある列', '結果': len(self.report['outliers']),
+             '状態': '✅' if len(self.report['outliers']) == 0 else '⚠️'},
+            {'チェック項目': '型の問題', '結果': len(self.report['type_issues']),
+             '状態': '✅' if len(self.report['type_issues']) == 0 else '⚠️'},
+            {'チェック項目': '高相関ペア', '結果': len(self.report['correlations']),
+             '状態': '✅' if len(self.report['correlations']) == 0 else '⚠️'},
+            {'チェック項目': '品質スコア', '結果': f"{self.report['summary']['quality_score']}/100",
+             '状態': '✅' if self.report['summary']['quality_score'] >= 80 else '⚠️'}
+        ]
+        
+        return pd.DataFrame(data)
+    
+    def plot_quality_overview(self) -> go.Figure:
+        """品質概要のプロット"""
+        if not self.report:
+            self.check_all()
+        
+        # ゲージチャート
+        fig = go.Figure(go.Indicator(
+            mode="gauge+number",
+            value=self.report['summary']['quality_score'],
+            domain={'x': [0, 1], 'y': [0, 1]},
+            title={'text': "データ品質スコア", 'font': {'size': 24}},
+            gauge={
+                'axis': {'range': [0, 100], 'tickwidth': 1},
+                'bar': {'color': "darkblue"},
+                'bgcolor': "white",
+                'borderwidth': 2,
+                'bordercolor': "gray",
+                'steps': [
+                    {'range': [0, 50], 'color': '#ff6b6b'},
+                    {'range': [50, 80], 'color': '#ffd93d'},
+                    {'range': [80, 100], 'color': '#6bcb77'}
+                ],
+                'threshold': {
+                    'line': {'color': "red", 'width': 4},
+                    'thickness': 0.75,
+                    'value': 80
+                }
+            }
+        ))
+        
+        fig.update_layout(
+            height=300,
+            template='plotly_white'
+        )
+        
+        return fig
+
+
+class FeatureEngineer:
+    """特徴量自動生成クラス"""
+    
+    def __init__(self, df: pd.DataFrame, target_column: str):
+        self.df = df.copy()
+        self.target_column = target_column
+        self.new_features = []
+        self.feature_info = []
+        
+    def generate_all(self, include_interactions: bool = True,
+                    include_polynomial: bool = True,
+                    include_ratios: bool = True,
+                    include_binning: bool = True) -> pd.DataFrame:
+        """全ての特徴量を生成"""
+        
+        df_new = self.df.copy()
+        numeric_cols = df_new.select_dtypes(include=[np.number]).columns.tolist()
+        
+        # ターゲット列を除外
+        if self.target_column in numeric_cols:
+            numeric_cols.remove(self.target_column)
+        
+        if include_interactions:
+            df_new = self._create_interactions(df_new, numeric_cols[:5])  # 上位5列
+        
+        if include_polynomial:
+            df_new = self._create_polynomial(df_new, numeric_cols[:5])
+        
+        if include_ratios:
+            df_new = self._create_ratios(df_new, numeric_cols[:5])
+        
+        if include_binning:
+            df_new = self._create_binning(df_new, numeric_cols)
+        
+        return df_new
+    
+    def _create_interactions(self, df: pd.DataFrame, columns: list) -> pd.DataFrame:
+        """交互作用項を作成"""
+        for i, col1 in enumerate(columns):
+            for col2 in columns[i+1:]:
+                new_col = f"{col1}_×_{col2}"
+                df[new_col] = df[col1] * df[col2]
+                self.new_features.append(new_col)
+                self.feature_info.append({
+                    '特徴量': new_col,
+                    'タイプ': '交互作用',
+                    '元の特徴量': f"{col1}, {col2}",
+                    '説明': f"{col1}と{col2}の積"
+                })
+        
+        return df
+    
+    def _create_polynomial(self, df: pd.DataFrame, columns: list) -> pd.DataFrame:
+        """多項式特徴量を作成"""
+        for col in columns:
+            # 2乗
+            new_col = f"{col}_squared"
+            df[new_col] = df[col] ** 2
+            self.new_features.append(new_col)
+            self.feature_info.append({
+                '特徴量': new_col,
+                'タイプ': '多項式',
+                '元の特徴量': col,
+                '説明': f"{col}の2乗"
+            })
+            
+            # 平方根（正の値のみ）
+            if (df[col] >= 0).all():
+                new_col = f"{col}_sqrt"
+                df[new_col] = np.sqrt(df[col])
+                self.new_features.append(new_col)
+                self.feature_info.append({
+                    '特徴量': new_col,
+                    'タイプ': '多項式',
+                    '元の特徴量': col,
+                    '説明': f"{col}の平方根"
+                })
+        
+        return df
+    
+    def _create_ratios(self, df: pd.DataFrame, columns: list) -> pd.DataFrame:
+        """比率特徴量を作成"""
+        for i, col1 in enumerate(columns):
+            for col2 in columns[i+1:]:
+                # ゼロ除算を避ける
+                if (df[col2] != 0).all():
+                    new_col = f"{col1}_per_{col2}"
+                    df[new_col] = df[col1] / df[col2]
+                    self.new_features.append(new_col)
+                    self.feature_info.append({
+                        '特徴量': new_col,
+                        'タイプ': '比率',
+                        '元の特徴量': f"{col1}, {col2}",
+                        '説明': f"{col1}÷{col2}"
+                    })
+        
+        return df
+    
+    def _create_binning(self, df: pd.DataFrame, columns: list, n_bins: int = 5) -> pd.DataFrame:
+        """ビニング特徴量を作成"""
+        for col in columns[:3]:  # 上位3列のみ
+            new_col = f"{col}_bin"
+            try:
+                df[new_col] = pd.qcut(df[col], q=n_bins, labels=False, duplicates='drop')
+                self.new_features.append(new_col)
+                self.feature_info.append({
+                    '特徴量': new_col,
+                    'タイプ': 'ビニング',
+                    '元の特徴量': col,
+                    '説明': f"{col}を{n_bins}分位に分割"
+                })
+            except Exception:
+                pass  # ビニングできない場合はスキップ
+        
+        return df
+    
+    def get_feature_info(self) -> pd.DataFrame:
+        """生成した特徴量の情報を取得"""
+        return pd.DataFrame(self.feature_info)
+    
+    def evaluate_features(self, model, X_train, y_train, X_test, y_test) -> pd.DataFrame:
+        """特徴量の有効性を評価"""
+        from sklearn.metrics import r2_score
+        
+        results = []
+        
+        # ベースライン
+        model.fit(X_train, y_train)
+        base_score = r2_score(y_test, model.predict(X_test))
+        
+        # 各新特徴量を追加して評価
+        for feat in self.new_features:
+            if feat in X_train.columns:
+                continue
+                
+            # 新特徴量を追加
+            X_train_new = X_train.copy()
+            X_test_new = X_test.copy()
+            
+            # 特徴量を追加
+            # ... (実際の実装では元データから特徴量を再計算)
+            
+        return pd.DataFrame(results)
+
+
+class PredictionHistory:
+    """予測履歴管理クラス"""
+    
+    def __init__(self):
+        self.history = []
+        
+    def add_prediction(self, input_data: dict, prediction: float, 
+                      confidence_interval: dict = None,
+                      model_type: str = None,
+                      similar_properties: pd.DataFrame = None):
+        """予測を履歴に追加"""
+        record = {
+            'id': len(self.history) + 1,
+            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'input_data': input_data,
+            'prediction': prediction,
+            'confidence_interval': confidence_interval,
+            'model_type': model_type,
+            'similar_avg': similar_properties[similar_properties.columns[2]].mean() if similar_properties is not None else None
+        }
+        
+        self.history.append(record)
+        return record
+    
+    def get_history_dataframe(self) -> pd.DataFrame:
+        """履歴をDataFrameで取得"""
+        if not self.history:
+            return pd.DataFrame()
+        
+        records = []
+        for h in self.history:
+            record = {
+                'ID': h['id'],
+                '日時': h['timestamp'],
+                '予測価格': h['prediction'],
+                'モデル': h['model_type'] or '-',
+            }
+            
+            # 信頼区間
+            if h['confidence_interval']:
+                intervals = h['confidence_interval'].get('intervals', {})
+                if '95%' in intervals:
+                    record['95%下限'] = intervals['95%']['lower']
+                    record['95%上限'] = intervals['95%']['upper']
+            
+            # 類似物件平均
+            if h['similar_avg']:
+                record['類似物件平均'] = h['similar_avg']
+            
+            # 入力データのサマリー
+            input_summary = ', '.join([f"{k}={v}" for k, v in list(h['input_data'].items())[:3]])
+            record['入力条件'] = input_summary + '...' if len(h['input_data']) > 3 else input_summary
+            
+            records.append(record)
+        
+        return pd.DataFrame(records)
+    
+    def clear_history(self):
+        """履歴をクリア"""
+        self.history = []
+    
+    def export_to_csv(self) -> str:
+        """CSVとしてエクスポート"""
+        df = self.get_history_dataframe()
+        return df.to_csv(index=False)
+    
+    def export_to_json(self) -> str:
+        """JSONとしてエクスポート"""
+        import json
+        return json.dumps(self.history, ensure_ascii=False, indent=2, default=str)
+    
+    def plot_history(self) -> go.Figure:
+        """予測履歴のプロット"""
+        if not self.history:
+            return None
+        
+        df = self.get_history_dataframe()
+        
+        fig = go.Figure()
+        
+        # 予測価格
+        fig.add_trace(go.Scatter(
+            x=df['日時'],
+            y=df['予測価格'],
+            mode='lines+markers',
+            name='予測価格',
+            marker=dict(size=10, color='#1f77b4'),
+            line=dict(width=2)
+        ))
+        
+        # 信頼区間があれば追加
+        if '95%下限' in df.columns and '95%上限' in df.columns:
+            fig.add_trace(go.Scatter(
+                x=df['日時'].tolist() + df['日時'].tolist()[::-1],
+                y=df['95%上限'].tolist() + df['95%下限'].tolist()[::-1],
+                fill='toself',
+                fillcolor='rgba(31, 119, 180, 0.2)',
+                line=dict(color='rgba(255,255,255,0)'),
+                name='95%信頼区間'
+            ))
+        
+        # 類似物件平均があれば追加
+        if '類似物件平均' in df.columns:
+            fig.add_trace(go.Scatter(
+                x=df['日時'],
+                y=df['類似物件平均'],
+                mode='markers',
+                name='類似物件平均',
+                marker=dict(size=8, color='#2ca02c', symbol='diamond')
+            ))
+        
+        fig.update_layout(
+            title=dict(text="<b>予測履歴</b>", font=dict(size=18)),
+            xaxis_title="日時",
+            yaxis_title="価格",
+            template='plotly_white',
+            height=400,
+            hovermode='x unified'
+        )
+        
+        return fig
+    
+    def get_statistics(self) -> dict:
+        """履歴の統計情報"""
+        if not self.history:
+            return {}
+        
+        predictions = [h['prediction'] for h in self.history]
+        
+        return {
+            '予測回数': len(self.history),
+            '平均予測価格': np.mean(predictions),
+            '最高予測価格': np.max(predictions),
+            '最低予測価格': np.min(predictions),
+            '標準偏差': np.std(predictions)
+        }

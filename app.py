@@ -1,12 +1,13 @@
 """
 RealEstateMLStudio - 不動産価格予測MLスタジオ
-メインアプリケーション v2.2 - SHAP分析・信頼区間・PDFレポート・What-if分析
+メインアプリケーション v2.3 - ユーティリティ機能追加（類似物件検索・データ品質チェック・特徴量自動生成・予測履歴管理）
 """
 import streamlit as st
 import pandas as pd
 import numpy as np
 import os
 import sys
+from datetime import datetime
 
 # srcディレクトリをパスに追加
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
@@ -14,7 +15,10 @@ sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 from src.preprocessor import DataPreprocessor, get_data_summary
 from src.trainer import ModelTrainer, StackingTrainer, compare_models, get_best_model
 from src.visualizer import Visualizer
-from src.analysis import SHAPAnalyzer, PredictionInterval, WhatIfAnalyzer, PDFReportGenerator
+from src.analysis import (
+    SHAPAnalyzer, PredictionInterval, WhatIfAnalyzer, PDFReportGenerator,
+    SimilarPropertyFinder, DataQualityChecker, FeatureEngineer, PredictionHistory
+)
 from src.utils import (
     load_css, create_header, init_session_state, 
     display_dataframe_info, show_success_message, show_warning_message
@@ -284,14 +288,15 @@ def main():
         if uploaded_model:
             load_saved_model(uploaded_model)
     
-    # メインコンテンツ - 6タブに拡張
+    # メインコンテンツ - 7タブに拡張
     tabs = st.tabs([
         "📤 データアップロード", 
         "🔍 データ分析 (EDA)", 
         "🎯 モデル学習",
         "📊 評価結果",
         "🔮 予測実行",
-        "🔬 詳細分析"  # 新しいタブ
+        "🔬 詳細分析",
+        "🛠️ ユーティリティ"  # 新しいタブ
     ])
     
     # タブ1: データアップロード
@@ -317,9 +322,13 @@ def main():
     with tabs[4]:
         render_prediction_tab()
     
-    # タブ6: 詳細分析（新機能）
+    # タブ6: 詳細分析
     with tabs[5]:
         render_advanced_analysis_tab()
+    
+    # タブ7: ユーティリティ（新機能）
+    with tabs[6]:
+        render_utility_tab()
 
 
 def render_data_upload_tab():
@@ -1187,6 +1196,384 @@ def render_advanced_analysis_tab():
                                 st.error(f"分析中にエラーが発生しました: {str(e)}")
                     else:
                         st.warning("少なくとも1つのシナリオを定義してください。")
+
+
+def render_utility_tab():
+    """ユーティリティタブ（類似物件検索、データ品質チェック、特徴量自動生成、予測履歴）"""
+    st.header("Step 7: ユーティリティ")
+    
+    # サブタブを作成
+    utility_tabs = st.tabs([
+        "🔍 類似物件検索",
+        "📝 データ品質チェック",
+        "⚙️ 特徴量自動生成",
+        "📜 予測履歴管理"
+    ])
+    
+    df = st.session_state.get('df')
+    df_processed = st.session_state.get('df_processed')
+    target_column = st.session_state.get('target_column', '価格')
+    feature_columns = st.session_state.get('feature_columns', [])
+    df_original = st.session_state.get('df_original', df)
+    
+    # 類似物件検索タブ
+    with utility_tabs[0]:
+        st.subheader("🔍 類似物件検索")
+        st.markdown("""
+        入力した条件に似た物件を学習データから検索します。
+        - 類似度はユークリッド距離またはコサイン類似度で計算
+        - 予測価格と実績価格の比較が可能
+        """)
+        
+        if not st.session_state.get('is_trained', False):
+            show_warning_message("先にモデルを学習してください")
+        elif df is None:
+            show_warning_message("先にデータをアップロードしてください")
+        else:
+            col1, col2 = st.columns([3, 1])
+            
+            with col2:
+                n_neighbors = st.slider("検索件数", 3, 20, 5, key="similar_n")
+                similarity_method = st.selectbox(
+                    "類似度計算方法",
+                    ["euclidean", "cosine"],
+                    format_func=lambda x: "ユークリッド距離" if x == "euclidean" else "コサイン類似度",
+                    key="similar_method"
+                )
+            
+            with col1:
+                st.markdown("**物件条件を入力**")
+                if feature_columns and df_original is not None:
+                    input_data_similar = create_prediction_form(feature_columns, df_original, "similar")
+            
+            st.markdown("---")
+            
+            if st.button("🔍 類似物件を検索", type="primary", key="search_similar"):
+                with st.spinner("検索中..."):
+                    try:
+                        # 入力データを準備
+                        df_input = pd.DataFrame([input_data_similar])
+                        
+                        preprocessor = st.session_state.get('preprocessor')
+                        if preprocessor and not st.session_state.get('use_native_cat', False):
+                            df_input_processed = preprocessor.transform_new_data(df_input)
+                        else:
+                            df_input_processed = df_input
+                        
+                        if not st.session_state.get('use_native_cat', False):
+                            df_input_processed = df_input_processed.select_dtypes(include=[np.number])
+                        
+                        # 類似物件検索
+                        finder = SimilarPropertyFinder(df, feature_columns, target_column)
+                        finder.fit()
+                        similar_df = finder.find_similar(
+                            df_input_processed, 
+                            n_neighbors=n_neighbors,
+                            method=similarity_method
+                        )
+                        
+                        # 予測も実行
+                        trainer = st.session_state['trainer']
+                        prediction = trainer.predict(df_input_processed)[0]
+                        
+                        # 結果表示
+                        st.subheader("📊 検索結果")
+                        
+                        # 予測価格と類似物件平均の比較
+                        col1, col2, col3 = st.columns(3)
+                        avg_price = similar_df[target_column].mean()
+                        diff_pct = (prediction - avg_price) / avg_price * 100
+                        
+                        with col1:
+                            st.metric("予測価格", f"{prediction:,.0f}")
+                        with col2:
+                            st.metric("類似物件平均", f"{avg_price:,.0f}")
+                        with col3:
+                            st.metric("差異", f"{diff_pct:+.1f}%")
+                        
+                        # 比較プロット
+                        fig_similar = finder.plot_similar_properties(prediction, similar_df)
+                        st.plotly_chart(fig_similar, use_container_width=True)
+                        
+                        # 類似物件一覧
+                        st.subheader("📋 類似物件一覧")
+                        st.dataframe(similar_df, use_container_width=True, height=300)
+                        
+                        # セッションに保存
+                        st.session_state['last_similar_df'] = similar_df
+                        st.session_state['last_similar_prediction'] = prediction
+                        
+                        show_success_message(f"{n_neighbors}件の類似物件が見つかりました！")
+                        
+                    except Exception as e:
+                        st.error(f"検索中にエラーが発生しました: {str(e)}")
+    
+    # データ品質チェックタブ
+    with utility_tabs[1]:
+        st.subheader("📝 データ品質チェック")
+        st.markdown("""
+        アップロードしたデータの品質を自動チェックします。
+        - 重複行、欠損値、異常値の検出
+        - データ型の問題、高相関の検出
+        - 総合品質スコアの算出
+        """)
+        
+        if df is None:
+            show_warning_message("先にデータをアップロードしてください")
+        else:
+            if st.button("🔬 品質チェックを実行", type="primary", key="run_quality_check"):
+                with st.spinner("チェック中..."):
+                    try:
+                        checker = DataQualityChecker(df)
+                        report = checker.check_all()
+                        
+                        st.session_state['quality_report'] = report
+                        st.session_state['quality_checker'] = checker
+                        
+                        # 品質スコアゲージ
+                        col1, col2 = st.columns([1, 2])
+                        
+                        with col1:
+                            fig_gauge = checker.plot_quality_overview()
+                            st.plotly_chart(fig_gauge, use_container_width=True)
+                        
+                        with col2:
+                            st.subheader("📋 チェック結果サマリー")
+                            summary_df = checker.get_summary_dataframe()
+                            st.dataframe(summary_df, use_container_width=True, hide_index=True)
+                        
+                        # 詳細レポート
+                        st.markdown("---")
+                        st.subheader("📊 詳細レポート")
+                        
+                        detail_tabs = st.tabs(["重複", "欠損値", "異常値", "相関"])
+                        
+                        with detail_tabs[0]:
+                            dup = report['duplicates']
+                            if dup['count'] > 0:
+                                st.warning(f"⚠️ {dup['count']}件の重複行が見つかりました（{dup['percentage']:.2f}%）")
+                                if dup['indices']:
+                                    st.write("重複行のインデックス（最初の10件）:", dup['indices'])
+                            else:
+                                st.success("✅ 重複行はありません")
+                        
+                        with detail_tabs[1]:
+                            missing = report['missing']
+                            if missing['columns_with_missing']:
+                                st.warning(f"⚠️ {len(missing['columns_with_missing'])}列に欠損値があります")
+                                missing_df = pd.DataFrame([
+                                    {'列名': k, '欠損数': v, '欠損率(%)': missing['missing_percentage'].get(k, 0)}
+                                    for k, v in missing['columns_with_missing'].items()
+                                ])
+                                st.dataframe(missing_df, use_container_width=True, hide_index=True)
+                            else:
+                                st.success("✅ 欠損値はありません")
+                        
+                        with detail_tabs[2]:
+                            outliers = report['outliers']
+                            if outliers:
+                                st.warning(f"⚠️ {len(outliers)}列に異常値があります")
+                                for col, info in outliers.items():
+                                    with st.expander(f"{col}: {info['count']}件 ({info['percentage']}%)"):
+                                        st.write(f"下限: {info['lower_bound']}, 上限: {info['upper_bound']}")
+                                        st.write(f"サンプル値: {info['sample_values']}")
+                            else:
+                                st.success("✅ 異常値はありません")
+                        
+                        with detail_tabs[3]:
+                            correlations = report['correlations']
+                            if correlations:
+                                st.warning(f"⚠️ {len(correlations)}組の高相関ペアが見つかりました（多重共線性の可能性）")
+                                corr_df = pd.DataFrame(correlations)
+                                st.dataframe(corr_df, use_container_width=True, hide_index=True)
+                            else:
+                                st.success("✅ 問題のある高相関ペアはありません")
+                        
+                        show_success_message("品質チェックが完了しました！")
+                        
+                    except Exception as e:
+                        st.error(f"チェック中にエラーが発生しました: {str(e)}")
+    
+    # 特徴量自動生成タブ
+    with utility_tabs[2]:
+        st.subheader("⚙️ 特徴量自動生成")
+        st.markdown("""
+        元の特徴量から新しい特徴量を自動生成します。
+        - **交互作用**: 2つの特徴量の積
+        - **多項式**: 2乗、平方根
+        - **比率**: 特徴量間の比
+        - **ビニング**: 連続値をカテゴリ化
+        """)
+        
+        if df is None:
+            show_warning_message("先にデータをアップロードしてください")
+        else:
+            st.subheader("🔧 生成オプション")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                include_interactions = st.checkbox("交互作用項", value=True, key="fe_interactions")
+                include_polynomial = st.checkbox("多項式特徴量", value=True, key="fe_polynomial")
+            with col2:
+                include_ratios = st.checkbox("比率特徴量", value=True, key="fe_ratios")
+                include_binning = st.checkbox("ビニング特徴量", value=True, key="fe_binning")
+            
+            st.markdown("---")
+            
+            if st.button("⚙️ 特徴量を生成", type="primary", key="generate_features"):
+                with st.spinner("特徴量を生成中..."):
+                    try:
+                        engineer = FeatureEngineer(df, target_column)
+                        df_new = engineer.generate_all(
+                            include_interactions=include_interactions,
+                            include_polynomial=include_polynomial,
+                            include_ratios=include_ratios,
+                            include_binning=include_binning
+                        )
+                        
+                        st.session_state['df_engineered'] = df_new
+                        st.session_state['feature_engineer'] = engineer
+                        
+                        # 結果表示
+                        st.subheader("📊 生成結果")
+                        
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("元の特徴量数", len(df.columns))
+                        with col2:
+                            st.metric("新規生成数", len(engineer.new_features))
+                        with col3:
+                            st.metric("合計特徴量数", len(df_new.columns))
+                        
+                        # 生成した特徴量の一覧
+                        st.subheader("📋 生成した特徴量")
+                        feature_info = engineer.get_feature_info()
+                        if not feature_info.empty:
+                            st.dataframe(feature_info, use_container_width=True, hide_index=True)
+                        else:
+                            st.info("新しい特徴量は生成されませんでした")
+                        
+                        # データプレビュー
+                        st.subheader("📋 データプレビュー（新特徴量含む）")
+                        st.dataframe(df_new.head(10), use_container_width=True)
+                        
+                        # ダウンロード
+                        csv = df_new.to_csv(index=False).encode('utf-8-sig')
+                        st.download_button(
+                            "📥 拡張データをダウンロード",
+                            csv,
+                            "engineered_data.csv",
+                            "text/csv"
+                        )
+                        
+                        show_success_message(f"{len(engineer.new_features)}個の新特徴量を生成しました！")
+                        
+                    except Exception as e:
+                        st.error(f"特徴量生成中にエラーが発生しました: {str(e)}")
+    
+    # 予測履歴管理タブ
+    with utility_tabs[3]:
+        st.subheader("📜 予測履歴管理")
+        st.markdown("""
+        このセッション中に実行した予測の履歴を管理します。
+        - 予測結果の一覧表示
+        - 履歴のエクスポート（CSV/JSON）
+        - 予測トレンドの可視化
+        """)
+        
+        # 予測履歴の初期化
+        if 'prediction_history' not in st.session_state:
+            st.session_state['prediction_history'] = PredictionHistory()
+        
+        history = st.session_state['prediction_history']
+        
+        # 新しい予測を履歴に追加するボタン（最新の予測がある場合）
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            if st.session_state.get('last_shap_explanation') or st.session_state.get('last_interval_result'):
+                if st.button("📝 最新の予測を履歴に追加", key="add_to_history"):
+                    try:
+                        shap_exp = st.session_state.get('last_shap_explanation')
+                        interval_res = st.session_state.get('last_interval_result')
+                        input_data = st.session_state.get('last_input_data')
+                        similar_df = st.session_state.get('last_similar_df')
+                        
+                        prediction = shap_exp['prediction'] if shap_exp else interval_res['prediction']
+                        
+                        input_dict = input_data.iloc[0].to_dict() if input_data is not None else {}
+                        
+                        history.add_prediction(
+                            input_data=input_dict,
+                            prediction=prediction,
+                            confidence_interval=interval_res,
+                            model_type=st.session_state.get('model_type', 'unknown'),
+                            similar_properties=similar_df
+                        )
+                        
+                        show_success_message("予測を履歴に追加しました！")
+                        st.rerun()
+                        
+                    except Exception as e:
+                        st.error(f"追加中にエラー: {str(e)}")
+        
+        with col2:
+            if st.button("🗑️ 履歴をクリア", key="clear_history"):
+                history.clear_history()
+                show_success_message("履歴をクリアしました")
+                st.rerun()
+        
+        st.markdown("---")
+        
+        # 履歴表示
+        history_df = history.get_history_dataframe()
+        
+        if history_df.empty:
+            st.info("📭 まだ予測履歴がありません。詳細分析タブで予測を実行してください。")
+        else:
+            # 統計情報
+            stats = history.get_statistics()
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("予測回数", stats['予測回数'])
+            with col2:
+                st.metric("平均予測価格", f"{stats['平均予測価格']:,.0f}")
+            with col3:
+                st.metric("最高予測価格", f"{stats['最高予測価格']:,.0f}")
+            with col4:
+                st.metric("最低予測価格", f"{stats['最低予測価格']:,.0f}")
+            
+            # 履歴プロット
+            fig_history = history.plot_history()
+            if fig_history:
+                st.plotly_chart(fig_history, use_container_width=True)
+            
+            # 履歴テーブル
+            st.subheader("📋 予測履歴一覧")
+            st.dataframe(history_df, use_container_width=True, hide_index=True)
+            
+            # エクスポート
+            st.subheader("📥 エクスポート")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                csv_data = history.export_to_csv()
+                st.download_button(
+                    "📥 CSVでダウンロード",
+                    csv_data,
+                    f"prediction_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    "text/csv"
+                )
+            
+            with col2:
+                json_data = history.export_to_json()
+                st.download_button(
+                    "📥 JSONでダウンロード",
+                    json_data,
+                    f"prediction_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    "application/json"
+                )
 
 
 def train_model(model_type, use_tuning, n_trials, use_cv, cv_folds, test_size,
