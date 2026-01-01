@@ -40,16 +40,42 @@ class SHAPAnalyzer:
         if len(X) > max_samples:
             X_sample = X.sample(n=max_samples, random_state=42)
         else:
-            X_sample = X
+            X_sample = X.copy()
         
-        # TreeExplainerを使用（GBDT系モデル用）
+        # モデルタイプを判定して適切なExplainerを使用
+        model_type = type(self.model).__name__
+        
         try:
-            self.explainer = shap.TreeExplainer(self.model)
-            self.shap_values = self.explainer.shap_values(X_sample)
-        except Exception:
-            # フォールバック: Explainer
-            self.explainer = shap.Explainer(self.model, X_sample)
-            self.shap_values = self.explainer(X_sample).values
+            if 'XGB' in model_type or 'LGBM' in model_type or 'LightGBM' in model_type:
+                # XGBoost/LightGBMはTreeExplainerを使用
+                self.explainer = shap.TreeExplainer(self.model)
+                self.shap_values = self.explainer.shap_values(X_sample)
+            elif 'CatBoost' in model_type:
+                # CatBoostはTreeExplainerを使用
+                self.explainer = shap.TreeExplainer(self.model)
+                self.shap_values = self.explainer.shap_values(X_sample)
+            elif 'Stacking' in model_type:
+                # スタッキングモデルはKernelExplainerを使用
+                X_background = shap.sample(X_sample, min(100, len(X_sample)))
+                self.explainer = shap.KernelExplainer(self.model.predict, X_background)
+                self.shap_values = self.explainer.shap_values(X_sample.iloc[:min(100, len(X_sample))])
+                X_sample = X_sample.iloc[:min(100, len(X_sample))]
+            else:
+                # その他のモデルはKernelExplainerを使用
+                X_background = shap.sample(X_sample, min(100, len(X_sample)))
+                self.explainer = shap.KernelExplainer(self.model.predict, X_background)
+                self.shap_values = self.explainer.shap_values(X_sample.iloc[:min(100, len(X_sample))])
+                X_sample = X_sample.iloc[:min(100, len(X_sample))]
+        except Exception as e:
+            # フォールバック: Permutation Explainerを使用
+            try:
+                X_background = X_sample.iloc[:min(50, len(X_sample))]
+                self.explainer = shap.Explainer(self.model.predict, X_background)
+                shap_result = self.explainer(X_sample.iloc[:min(200, len(X_sample))])
+                self.shap_values = shap_result.values
+                X_sample = X_sample.iloc[:min(200, len(X_sample))]
+            except Exception as e2:
+                raise ValueError(f"SHAP値の計算に失敗しました: {str(e2)}")
         
         self.X_sample = X_sample
         return self.shap_values
@@ -68,10 +94,20 @@ class SHAPAnalyzer:
             self.calculate_shap_values()
         
         # 単一サンプルのSHAP値を計算
+        model_type = type(self.model).__name__
+        
         try:
-            shap_values_single = self.explainer.shap_values(X_single)
-        except:
-            shap_values_single = self.explainer(X_single).values
+            if hasattr(self.explainer, 'shap_values'):
+                shap_values_single = self.explainer.shap_values(X_single)
+            else:
+                shap_result = self.explainer(X_single)
+                shap_values_single = shap_result.values
+        except Exception:
+            # フォールバック
+            X_background = self.X_sample.iloc[:min(50, len(self.X_sample))]
+            temp_explainer = shap.Explainer(self.model.predict, X_background)
+            shap_result = temp_explainer(X_single)
+            shap_values_single = shap_result.values
         
         if len(shap_values_single.shape) > 1:
             shap_values_single = shap_values_single[0]
@@ -80,9 +116,10 @@ class SHAPAnalyzer:
         if hasattr(self.explainer, 'expected_value'):
             base_value = self.explainer.expected_value
             if isinstance(base_value, np.ndarray):
-                base_value = base_value[0]
+                base_value = base_value[0] if len(base_value) > 0 else float(base_value)
+            base_value = float(base_value)
         else:
-            base_value = self.model.predict(self.X_train).mean()
+            base_value = float(self.model.predict(self.X_train).mean())
         
         # 各特徴量の貢献度をDataFrameに
         contributions = pd.DataFrame({
@@ -92,11 +129,13 @@ class SHAPAnalyzer:
             '影響': ['↑ 価格上昇' if v > 0 else '↓ 価格下落' for v in shap_values_single]
         }).sort_values('SHAP値', key=abs, ascending=False)
         
+        prediction = base_value + shap_values_single.sum()
+        
         return {
             'base_value': base_value,
             'shap_values': shap_values_single,
             'contributions': contributions,
-            'prediction': base_value + shap_values_single.sum()
+            'prediction': prediction
         }
     
     def plot_summary(self, top_n: int = 15) -> go.Figure:

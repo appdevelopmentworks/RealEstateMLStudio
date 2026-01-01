@@ -579,32 +579,50 @@ def render_evaluation_tab():
         trainer = st.session_state['trainer']
         metrics = st.session_state['metrics']
         
+        # 評価指標ダッシュボード（常に表示可能）
         st.subheader("📊 評価指標ダッシュボード")
         fig_metrics = viz.plot_metrics_dashboard(metrics, getattr(trainer, 'cv_scores', None))
         st.plotly_chart(fig_metrics, use_container_width=True)
         
-        st.subheader("🎯 実測値 vs 予測値")
-        y_test_vals = trainer.y_test.values if hasattr(trainer.y_test, 'values') else trainer.y_test
-        fig_pred = viz.plot_actual_vs_predicted(y_test_vals, trainer.y_pred)
-        st.plotly_chart(fig_pred, use_container_width=True)
+        # y_testとy_predがある場合のみ詳細グラフを表示
+        y_test = getattr(trainer, 'y_test', None)
+        y_pred = getattr(trainer, 'y_pred', None)
         
-        st.subheader("📈 残差分析")
-        fig_residuals = viz.plot_residuals(y_test_vals, trainer.y_pred)
-        st.plotly_chart(fig_residuals, use_container_width=True)
+        if y_test is not None and y_pred is not None:
+            y_test_vals = y_test.values if hasattr(y_test, 'values') else y_test
+            
+            st.subheader("🎯 実測値 vs 予測値")
+            fig_pred = viz.plot_actual_vs_predicted(y_test_vals, y_pred)
+            st.plotly_chart(fig_pred, use_container_width=True)
+            
+            st.subheader("📈 残差分析")
+            fig_residuals = viz.plot_residuals(y_test_vals, y_pred)
+            st.plotly_chart(fig_residuals, use_container_width=True)
+            
+            st.subheader("📊 予測値と実測値の分布")
+            fig_dist = viz.plot_prediction_distribution(y_test_vals, y_pred)
+            st.plotly_chart(fig_dist, use_container_width=True)
+        else:
+            st.info("📝 読み込んだモデルのため、詳細な評価グラフは表示できません。新しいデータで予測を実行してください。")
         
-        if trainer.feature_importance is not None:
+        # 特徴量重要度
+        feature_importance = getattr(trainer, 'feature_importance', None)
+        if feature_importance is not None:
             st.subheader("🔑 特徴量重要度")
             fig_importance = viz.plot_feature_importance(
-                trainer.feature_importance,
-                top_n=min(20, len(trainer.feature_importance))
+                feature_importance,
+                top_n=min(20, len(feature_importance))
             )
             st.plotly_chart(fig_importance, use_container_width=True)
         
-        if hasattr(trainer, 'cv_scores') and trainer.cv_scores:
+        # 交差検証結果
+        cv_scores = getattr(trainer, 'cv_scores', None)
+        if cv_scores:
             st.subheader("🔄 交差検証結果")
-            fig_cv = viz.plot_cv_results(trainer.cv_scores)
+            fig_cv = viz.plot_cv_results(cv_scores)
             st.plotly_chart(fig_cv, use_container_width=True)
         
+        # モデル比較結果
         if st.session_state.get('comparison_results'):
             st.subheader("⚖️ モデル比較")
             comparison = st.session_state['comparison_results']
@@ -615,10 +633,6 @@ def render_evaluation_tab():
             
             best = get_best_model(comparison)
             st.success(f"🏆 最良モデル: **{best.upper()}** (R² = {comparison[best]['metrics']['r2']:.4f})")
-        
-        st.subheader("📊 予測値と実測値の分布")
-        fig_dist = viz.plot_prediction_distribution(y_test_vals, trainer.y_pred)
-        st.plotly_chart(fig_dist, use_container_width=True)
         
     else:
         show_warning_message("先にモデルを学習してください")
