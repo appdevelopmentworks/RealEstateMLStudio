@@ -238,15 +238,16 @@ class Visualizer:
             rows=2, cols=2,
             specs=[[{"type": "indicator"}, {"type": "indicator"}],
                    [{"type": "indicator"}, {"type": "indicator"}]],
-            vertical_spacing=0.3,
-            horizontal_spacing=0.2
+            vertical_spacing=0.35,
+            horizontal_spacing=0.15
         )
         
         # RMSE
         fig.add_trace(go.Indicator(
             mode="gauge+number+delta",
             value=metrics['rmse'],
-            title={"text": "<b>RMSE</b><br><span style='font-size:12px'>低いほど良い</span>"},
+            title={"text": "RMSE<br><span style='font-size:11px;color:gray'>低いほど良い</span>", 
+                   "font": {"size": 16}},
             gauge=dict(
                 axis=dict(range=[0, metrics['rmse'] * 2]),
                 bar=dict(color=COLORS['primary']),
@@ -259,14 +260,16 @@ class Visualizer:
                     value=metrics['rmse']
                 )
             ),
-            delta=dict(reference=metrics['rmse'] * 1.1, relative=True) if cv_scores else None
+            delta=dict(reference=metrics['rmse'] * 1.1, relative=True) if cv_scores else None,
+            domain={'row': 0, 'column': 0}
         ), row=1, col=1)
         
         # R² Score
         fig.add_trace(go.Indicator(
             mode="gauge+number",
             value=metrics['r2'],
-            title={"text": "<b>R² Score</b><br><span style='font-size:12px'>1に近いほど良い</span>"},
+            title={"text": "R² Score<br><span style='font-size:11px;color:gray'>1に近いほど良い</span>",
+                   "font": {"size": 16}},
             number=dict(suffix="", valueformat=".4f"),
             gauge=dict(
                 axis=dict(range=[0, 1]),
@@ -282,28 +285,32 @@ class Visualizer:
                     thickness=0.75,
                     value=metrics['r2']
                 )
-            )
+            ),
+            domain={'row': 0, 'column': 1}
         ), row=1, col=2)
         
         # MAE
         fig.add_trace(go.Indicator(
             mode="gauge+number",
             value=metrics['mae'],
-            title={"text": "<b>MAE</b><br><span style='font-size:12px'>平均絶対誤差</span>"},
+            title={"text": "MAE<br><span style='font-size:11px;color:gray'>平均絶対誤差</span>",
+                   "font": {"size": 16}},
             gauge=dict(
                 axis=dict(range=[0, metrics['mae'] * 2]),
                 bar=dict(color=COLORS['secondary']),
                 steps=[
                     dict(range=[0, metrics['mae']], color="lightgray"),
                 ],
-            )
+            ),
+            domain={'row': 1, 'column': 0}
         ), row=2, col=1)
         
         # MAPE
         fig.add_trace(go.Indicator(
             mode="gauge+number",
             value=metrics['mape'],
-            title={"text": "<b>MAPE (%)</b><br><span style='font-size:12px'>平均絶対%誤差</span>"},
+            title={"text": "MAPE (%)<br><span style='font-size:11px;color:gray'>平均絶対%誤差</span>",
+                   "font": {"size": 16}},
             number=dict(suffix="%", valueformat=".2f"),
             gauge=dict(
                 axis=dict(range=[0, min(100, metrics['mape'] * 2)]),
@@ -313,12 +320,20 @@ class Visualizer:
                     dict(range=[10, 20], color="#fff3e0"),
                     dict(range=[20, 100], color="#ffebee"),
                 ],
-            )
+            ),
+            domain={'row': 1, 'column': 1}
         ), row=2, col=2)
         
         fig.update_layout(
-            title=dict(text="<b>モデル評価指標ダッシュボード</b>", font=dict(size=24)),
-            height=600,
+            title=dict(
+                text="<b>モデル評価指標ダッシュボード</b>", 
+                font=dict(size=22),
+                y=0.98,
+                x=0.5,
+                xanchor='center'
+            ),
+            height=700,
+            margin=dict(t=80, b=30, l=30, r=30),
             template=self.theme
         )
         
