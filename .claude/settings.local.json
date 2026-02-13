@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venvScriptspip show numpy numba)",
+      "Bash(.venv/Scripts/pip.exe show:*)",
+      "Bash(python -m pip show:*)",
+      "Bash(where:*)",
+      "Bash(ls:*)",
+      "Bash(cmd.exe:*)",
+      "Bash(\"D:\\\\MyApp\\\\vibecoding-st\\\\RealEstateMLStudio\\\\.venv\\\\Scripts\\\\python.exe\" -m pip show numpy numba)",
+      "Bash(\"D:\\\\MyApp\\\\vibecoding-st\\\\RealEstateMLStudio\\\\.venv\\\\Scripts\\\\python.exe\" -c \"import numpy; print\\(''numpy'', numpy.__version__\\); import numba; print\\(''numba'', numba.__version__\\)\")",
+      "Bash(\"D:\\\\MyApp\\\\vibecoding-st\\\\RealEstateMLStudio\\\\.venv\\\\Scripts\\\\python.exe\" -m ensurepip:*)",
+      "Bash(\"D:\\\\MyApp\\\\vibecoding-st\\\\RealEstateMLStudio\\\\.venv\\\\Scripts\\\\python.exe\" -m pip install \"numpy<2.4\")",
+      "Bash(\"D:\\\\MyApp\\\\vibecoding-st\\\\RealEstateMLStudio\\\\.venv\\\\Scripts\\\\python.exe\" -c \"import numpy; print\\(''numpy'', numpy.__version__\\); import numba; print\\(''numba'', numba.__version__\\); import shap; print\\(''shap'', shap.__version__\\); from src.analysis import SHAPAnalyzer; print\\(''SHAPAnalyzer import OK''\\)\")"
+    ]
+  }
+}

@@ -7,9 +7,18 @@ from sklearn.model_selection import train_test_split, cross_val_score, KFold
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error, mean_absolute_percentage_error
 from sklearn.linear_model import ElasticNet
 from sklearn.ensemble import StackingRegressor
-from xgboost import XGBRegressor
-from lightgbm import LGBMRegressor
-from catboost import CatBoostRegressor
+try:
+    from xgboost import XGBRegressor
+except (ImportError, OSError):
+    XGBRegressor = None
+try:
+    from lightgbm import LGBMRegressor
+except (ImportError, OSError):
+    LGBMRegressor = None
+try:
+    from catboost import CatBoostRegressor
+except (ImportError, OSError):
+    CatBoostRegressor = None
 import optuna
 from optuna.samplers import TPESampler
 import joblib

@@ -48,15 +48,39 @@ RealEstateMLStudioは、機械学習を活用した不動産価格予測のた�
 
 ## 🚀 インストール
 
+### pip の場合
+
 ```bash
-# リポジトリのクローン
 cd RealEstateMLStudio
+
+# 仮想環境の作成・有効化
+python -m venv .venv
+# Windows
+.venv\Scripts\activate
+# macOS / Linux
+source .venv/bin/activate
 
 # 依存パッケージのインストール
 pip install -r requirements.txt
 
 # アプリケーションの起動
 streamlit run app.py
+```
+
+### uv の場合
+
+```bash
+cd RealEstateMLStudio
+
+# Python のインストール（未インストールの場合）
+uv python install 3.12
+
+# 仮想環境の作成・依存パッケージのインストール
+uv venv --python 3.12
+uv pip install -r requirements.txt
+
+# アプリケーションの起動
+uv run streamlit run app.py
 ```
 
 ## 📁 プロジェクト構造
